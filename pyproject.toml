@@ -1,0 +1,29 @@
+[project]
+name = "kumparan-data-engineering-assessment"
+version = "0.1.0"
+description = "Hourly article ELT assessment with a deterministic PostgreSQL source simulator"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "psycopg[binary]>=3.2.13,<4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2,<10",
+    "ruff>=0.14.5,<1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "integration: requires the local PostgreSQL source container",
+]
