@@ -33,8 +33,8 @@ tests:
 
 ```bash
 docker compose run --build --rm pipeline-test \
-  ruff format --check demo_source tests
-docker compose run --rm pipeline-test ruff check demo_source tests
+  ruff format --check demo_source ingestion tests
+docker compose run --rm pipeline-test ruff check demo_source ingestion tests
 docker compose run --rm pipeline-test pytest -q
 ```
 
@@ -66,6 +66,25 @@ Or, using Make commands:
 ```bash
 make source-generate COUNT=100000 SEED=2026 BATCH_SIZE=5000
 make source-generate-million
+```
+
+## Run ingestion manually
+
+The extractor reads through the read-only source account and preserves source
+fields while adding `_attempt_id` and `_extracted_at` lineage columns. It writes
+immutable Parquet parts followed by `_manifest.json` under:
+
+```text
+data/raw/source=postgres/entity=articles/ingest_date=<date>/
+  window=<start>_<end>/attempt=<id>/
+```
+
+```bash
+docker compose run --build --rm article-ingestion \
+  python -m ingestion.extract_articles \
+  --window-start 2026-11-12T13:00:00Z \
+  --window-end 2026-11-12T14:00:00Z \
+  --execution-type BACKFILL
 ```
 
 ## Continuous source activity

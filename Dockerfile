@@ -28,6 +28,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM runtime-dependencies AS runtime
 
 COPY demo_source/ ./demo_source/
+COPY ingestion/ ./ingestion/
 
 CMD ["python", "-m", "demo_source.mutate_articles", "list"]
 
@@ -37,6 +38,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-install-project
 
 COPY demo_source/ ./demo_source/
+COPY ingestion/ ./ingestion/
 COPY tests/ ./tests/
 
 CMD ["pytest", "-q"]

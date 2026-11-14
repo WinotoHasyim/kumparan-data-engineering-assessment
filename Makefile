@@ -15,8 +15,8 @@ build: ## Build the Docker runtime and test images
 
 lint: ## Run formatting and lint checks inside Docker
 	docker compose run --build --rm pipeline-test \
-		ruff format --check demo_source tests
-	docker compose run --rm pipeline-test ruff check demo_source tests
+		ruff format --check demo_source ingestion tests
+	docker compose run --rm pipeline-test ruff check demo_source ingestion tests
 
 test: ## Run unit and PostgreSQL integration tests inside Docker
 	docker compose run --build --rm pipeline-test

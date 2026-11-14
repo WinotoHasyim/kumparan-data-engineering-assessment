@@ -65,6 +65,25 @@ services:
       - live
     restart: unless-stopped
 
+  article-ingestion:
+    build:
+      context: .
+      target: runtime
+      args:
+        PYTHON_VERSION: "3.13.15"
+        UV_VERSION: "0.12.3"
+    image: kumparan-data-engineering-assessment:runtime
+    environment:
+      SOURCE_READER_DATABASE_URL: >-
+        postgresql://source_reader:source_reader@source-postgres:5432/${POSTGRES_DB:-source_db}
+    volumes:
+      - ./data:/data
+    depends_on:
+      source-postgres:
+        condition: service_healthy
+    profiles:
+      - tools
+
   pipeline-test:
     build:
       context: .
