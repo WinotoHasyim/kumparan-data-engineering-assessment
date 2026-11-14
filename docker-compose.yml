@@ -1,0 +1,89 @@
+name: kumparan-data-engineering-assessment
+
+services:
+  source-postgres:
+    image: postgres:17.7-alpine
+    container_name: kumparan-source-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-source_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - source-postgres-data:/var/lib/postgresql/data
+      - ./demo_source/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  source-tools:
+    build:
+      context: .
+      target: runtime
+      args:
+        PYTHON_VERSION: "3.13.15"
+        UV_VERSION: "0.12.3"
+    image: kumparan-data-engineering-assessment:runtime
+    environment:
+      SOURCE_ADMIN_DATABASE_URL: >-
+        postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@source-postgres:5432/${POSTGRES_DB:-source_db}
+    depends_on:
+      source-postgres:
+        condition: service_healthy
+    profiles:
+      - tools
+
+  source-workload:
+    build:
+      context: .
+      target: runtime
+      args:
+        PYTHON_VERSION: "3.13.15"
+        UV_VERSION: "0.12.3"
+    image: kumparan-data-engineering-assessment:runtime
+    init: true
+    command:
+      - python
+      - -m
+      - demo_source.workload
+      - --interval-seconds
+      - ${WORKLOAD_INTERVAL_SECONDS:-15}
+    environment:
+      SOURCE_ADMIN_DATABASE_URL: >-
+        postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@source-postgres:5432/${POSTGRES_DB:-source_db}
+    depends_on:
+      source-postgres:
+        condition: service_healthy
+    profiles:
+      - live
+    restart: unless-stopped
+
+  pipeline-test:
+    build:
+      context: .
+      target: test
+      args:
+        PYTHON_VERSION: "3.13.15"
+        UV_VERSION: "0.12.3"
+    image: kumparan-data-engineering-assessment:test
+    environment:
+      SOURCE_ADMIN_DATABASE_URL: >-
+        postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@source-postgres:5432/${POSTGRES_DB:-source_db}
+      SOURCE_READER_DATABASE_URL: >-
+        postgresql://source_reader:source_reader@source-postgres:5432/${POSTGRES_DB:-source_db}
+    depends_on:
+      source-postgres:
+        condition: service_healthy
+    profiles:
+      - test
+
+volumes:
+  source-postgres-data:
+    name: kumparan-source-postgres-data
