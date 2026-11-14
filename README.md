@@ -8,10 +8,12 @@ incremental processing, source updates, and deletion handling.
 
 - Docker Engine or Docker Desktop
 - Docker Compose v2 (`docker compose`)
+- Google Cloud CLI (optional; only for manual ingestion to GCS)
 
 Python, uv, PostgreSQL, and project packages run inside containers and do not
 need to be installed on the host. GNU Make is optional and provides shorter
-aliases for the Docker Compose commands.
+aliases for the Docker Compose commands. Local tests do not require Google Cloud
+credentials.
 
 ## Quickstart
 
@@ -70,17 +72,22 @@ make source-generate-million
 
 ## Run ingestion manually
 
-The extractor reads through the read-only source account and preserves source
-fields while adding `_attempt_id` and `_extracted_at` lineage columns. It writes
-immutable Parquet parts followed by `_manifest.json` under:
-
-```text
-data/raw/source=postgres/entity=articles/ingest_date=<date>/
-  window=<start>_<end>/attempt=<id>/
-```
+Set `GCP_PROJECT_ID` and `GCS_RAW_BUCKET` in `.env`, then provide Google
+Application Default Credentials when running the container:
 
 ```bash
-docker compose run --build --rm article-ingestion \
+gcloud auth application-default login
+
+export GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH="$(
+  gcloud info --format='value(config.paths.global_config_dir)'
+)/application_default_credentials.json"
+
+test -r "$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH"
+
+docker compose run --build --rm \
+  --mount "type=bind,source=$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH,target=/run/secrets/gcp.json,readonly" \
+  --env GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gcp.json \
+  article-ingestion \
   python -m ingestion.extract_articles \
   --window-start 2026-11-12T13:00:00Z \
   --window-end 2026-11-12T14:00:00Z \

@@ -76,8 +76,8 @@ services:
     environment:
       SOURCE_READER_DATABASE_URL: >-
         postgresql://source_reader:source_reader@source-postgres:5432/${POSTGRES_DB:-source_db}
-    volumes:
-      - ./data:/data
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
+      GCS_RAW_BUCKET: ${GCS_RAW_BUCKET:-}
     depends_on:
       source-postgres:
         condition: service_healthy

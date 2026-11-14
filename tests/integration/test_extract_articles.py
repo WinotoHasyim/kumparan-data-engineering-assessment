@@ -1,10 +1,10 @@
-import hashlib
+import io
 import json
 import os
 from datetime import UTC, datetime
-from pathlib import Path
 
 import psycopg
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -13,6 +13,70 @@ from ingestion.extract_articles import extract_articles
 ADMIN_URL = os.environ.get("SOURCE_ADMIN_DATABASE_URL")
 READER_URL = os.environ.get("SOURCE_READER_DATABASE_URL")
 TEST_IDS = (9_200_001, 9_200_002, 9_200_003, 9_200_004)
+
+
+class FakeUpload(io.BytesIO):
+    """Collect one streaming upload without contacting GCS."""
+
+    def __init__(self, blob: "FakeBlob", *, create_only: bool) -> None:
+        super().__init__()
+        self.blob = blob
+        self.create_only = create_only
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if exc_type is None:
+            self.blob.commit(self.getvalue(), create_only=self.create_only)
+        self.close()
+
+
+class FakeBlob:
+    """Implement only the GCS Blob operations used by the extractor."""
+
+    def __init__(self, bucket: "FakeBucket", name: str) -> None:
+        self.bucket = bucket
+        self.name = name
+        self.size: int | None = None
+        self.crc32c: str | None = None
+        self.generation: int | None = None
+        self.content_type: str | None = None
+
+    def open(self, mode: str, **kwargs: object) -> FakeUpload:
+        assert mode == "wb"
+        return FakeUpload(self, create_only=kwargs.get("if_generation_match") == 0)
+
+    def upload_from_string(
+        self,
+        data: str,
+        *,
+        content_type: str,
+        if_generation_match: int,
+    ) -> None:
+        assert content_type == "application/json"
+        self.commit(data.encode(), create_only=if_generation_match == 0)
+
+    def commit(self, data: bytes, *, create_only: bool) -> None:
+        if create_only and self.name in self.bucket.objects:
+            raise RuntimeError(f"object already exists: {self.name}")
+        self.bucket.objects[self.name] = data
+        self.bucket.write_order.append(self.name)
+        self.size = len(data)
+        self.crc32c = "test-crc32c"
+        self.generation = len(self.bucket.write_order)
+
+    def reload(self) -> None:
+        return None
+
+
+class FakeBucket:
+    """Keep uploaded GCS objects in memory for integration assertions."""
+
+    def __init__(self, name: str = "test-raw-bucket") -> None:
+        self.name = name
+        self.objects: dict[str, bytes] = {}
+        self.write_order: list[str] = []
+
+    def blob(self, name: str, **_: object) -> FakeBlob:
+        return FakeBlob(self, name)
 
 
 def require_database_urls() -> tuple[str, str]:
@@ -27,7 +91,7 @@ def delete_test_rows(admin_url: str) -> None:
 
 
 @pytest.mark.integration
-def test_extract_uses_half_open_window_and_keyset_pagination(tmp_path: Path) -> None:
+def test_extract_uses_half_open_window_and_keyset_pagination() -> None:
     admin_url, reader_url = require_database_urls()
     lower = datetime(2098, 1, 1, 4, 0, tzinfo=UTC)
     tied = datetime(2098, 1, 1, 4, 30, tzinfo=UTC)
@@ -52,21 +116,25 @@ def test_extract_uses_half_open_window_and_keyset_pagination(tmp_path: Path) -> 
         )
 
     try:
+        bucket = FakeBucket()
         result = extract_articles(
             database_url=reader_url,
             window_start=lower,
             window_end=upper,
-            output_dir=tmp_path,
-            rows_per_file=1,
+            bucket=bucket,
+            gcs_prefix="raw",
+            fetch_size=1,
+            rows_per_file=2,
             execution_type="SCHEDULED",
         )
 
-        attempt_path = Path(result["attempt_path"])
-        manifest = json.loads((attempt_path / "_manifest.json").read_text(encoding="utf-8"))
-        part_paths = [attempt_path / part["path"] for part in manifest["parts"]]
-        rows = [
-            row for part_path in part_paths for row in pq.ParquetFile(part_path).read().to_pylist()
+        manifest_object = result["manifest_uri"].removeprefix(f"gs://{bucket.name}/")
+        manifest = json.loads(bucket.objects[manifest_object])
+        parquet_files = [
+            pq.ParquetFile(pa.BufferReader(bucket.objects[part["object"]]))
+            for part in manifest["parts"]
         ]
+        rows = [row for parquet_file in parquet_files for row in parquet_file.read().to_pylist()]
 
         assert [row["id"] for row in rows] == list(TEST_IDS[:3])
         assert rows[1]["deleted_at"] == tied
@@ -75,40 +143,46 @@ def test_extract_uses_half_open_window_and_keyset_pagination(tmp_path: Path) -> 
             datetime.fromisoformat(manifest["extracted_at"].replace("Z", "+00:00"))
         }
         ingest_date = datetime.fromisoformat(manifest["extracted_at"].replace("Z", "+00:00")).date()
-        assert attempt_path.parts[-5:-1] == (
-            "source=postgres",
-            "entity=articles",
-            f"ingest_date={ingest_date.isoformat()}",
-            f"window={manifest['batch_id']}",
+        expected_prefix = (
+            "raw/source=postgres/entity=articles/"
+            f"ingest_date={ingest_date.isoformat()}/"
+            f"window={manifest['batch_id']}/attempt={manifest['attempt_id']}"
         )
-        assert attempt_path.name == f"attempt={manifest['attempt_id']}"
+        assert manifest_object == f"{expected_prefix}/_manifest.json"
         assert manifest["execution_type"] == "SCHEDULED"
         assert manifest["row_count"] == 3
-        assert manifest["part_count"] == 3
+        assert manifest["part_count"] == 2
+        assert [part["row_count"] for part in manifest["parts"]] == [2, 1]
+        assert [parquet_file.metadata.num_row_groups for parquet_file in parquet_files] == [2, 1]
+        assert all(part["object"].startswith(expected_prefix) for part in manifest["parts"])
         assert all(
-            hashlib.sha256(path.read_bytes()).hexdigest() == part["sha256"]
-            for path, part in zip(part_paths, manifest["parts"], strict=True)
+            part["uri"] == f"gs://{bucket.name}/{part['object']}" for part in manifest["parts"]
         )
+        assert bucket.write_order[-1] == manifest_object
     finally:
         delete_test_rows(admin_url)
 
 
 @pytest.mark.integration
-def test_extract_writes_manifest_for_empty_window(tmp_path: Path) -> None:
+def test_extract_writes_manifest_for_empty_window() -> None:
     _, reader_url = require_database_urls()
 
+    bucket = FakeBucket()
     result = extract_articles(
         database_url=reader_url,
         window_start=datetime(2199, 1, 1, tzinfo=UTC),
         window_end=datetime(2199, 1, 1, 1, tzinfo=UTC),
-        output_dir=tmp_path,
+        bucket=bucket,
+        gcs_prefix="raw",
+        fetch_size=3,
         rows_per_file=10,
         execution_type="BACKFILL",
     )
 
-    manifest_path = Path(result["attempt_path"]) / "_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_object = result["manifest_uri"].removeprefix(f"gs://{bucket.name}/")
+    manifest = json.loads(bucket.objects[manifest_object])
 
     assert manifest["row_count"] == 0
     assert manifest["part_count"] == 0
     assert manifest["parts"] == []
+    assert bucket.write_order == [manifest_object]

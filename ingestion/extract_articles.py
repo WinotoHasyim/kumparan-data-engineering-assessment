@@ -3,23 +3,28 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import psycopg
 import pyarrow as pa
 import pyarrow.parquet as pq
+from google.cloud import storage
+from google.cloud.storage.bucket import Bucket
 from psycopg.rows import dict_row
 
 from demo_source.cli_types import parse_utc_timestamp, positive_int
 
 READER_DATABASE_URL_ENV = "SOURCE_READER_DATABASE_URL"
-DEFAULT_OUTPUT_DIR = Path("/data/raw")
+GCS_RAW_BUCKET_ENV = "GCS_RAW_BUCKET"
+GCP_PROJECT_ID_ENV = "GCP_PROJECT_ID"
+DEFAULT_GCS_PREFIX = "raw"
+GCS_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+DEFAULT_ROWS_PER_FILE = 50_000
+DEFAULT_FETCH_SIZE = DEFAULT_ROWS_PER_FILE
 SOURCE_NAME = "postgres"
 ENTITY_NAME = "articles"
 EXECUTION_TYPES = (
@@ -73,32 +78,35 @@ def build_batch_id(window_start: datetime, window_end: datetime) -> str:
     return f"{start}_{end}"
 
 
-def build_attempt_dir(
-    output_dir: Path,
+def resolve_gcs_bucket_name(explicit_name: str | None = None) -> str:
+    """Return the raw bucket name or fail when it is not configured."""
+    bucket_name = explicit_name or os.environ.get(GCS_RAW_BUCKET_ENV)
+    if not bucket_name:
+        raise RuntimeError(
+            f"{GCS_RAW_BUCKET_ENV} is required; set it in the runtime environment "
+            "or pass --gcs-bucket"
+        )
+    return bucket_name
+
+
+def build_attempt_prefix(
+    gcs_prefix: str,
     *,
     extracted_at: datetime,
     batch_id: str,
     attempt_id: str,
-) -> Path:
-    """Build the local equivalent of the immutable GCS object prefix."""
+) -> str:
+    """Build the immutable GCS object prefix for one extraction attempt."""
     ingest_date = extracted_at.astimezone(UTC).date().isoformat()
-    return (
-        output_dir
-        / f"source={SOURCE_NAME}"
-        / f"entity={ENTITY_NAME}"
-        / f"ingest_date={ingest_date}"
-        / f"window={batch_id}"
-        / f"attempt={attempt_id}"
+    segments = (
+        gcs_prefix.strip("/"),
+        f"source={SOURCE_NAME}",
+        f"entity={ENTITY_NAME}",
+        f"ingest_date={ingest_date}",
+        f"window={batch_id}",
+        f"attempt={attempt_id}",
     )
-
-
-def sha256_file(path: Path) -> str:
-    """Return the SHA-256 digest of one file."""
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return "/".join(segment for segment in segments if segment)
 
 
 def fetch_page(
@@ -108,7 +116,7 @@ def fetch_page(
     window_end: datetime,
     last_updated_at: datetime | None,
     last_id: int | None,
-    rows_per_file: int,
+    page_size: int,
 ) -> list[dict[str, Any]]:
     """Fetch one stable keyset page from the extraction interval."""
     if last_updated_at is None:
@@ -121,7 +129,7 @@ def fetch_page(
             ORDER BY updated_at, id
             LIMIT %s
             """,
-            (window_start, window_end, rows_per_file),
+            (window_start, window_end, page_size),
         )
     else:
         cursor.execute(
@@ -134,7 +142,7 @@ def fetch_page(
             ORDER BY updated_at, id
             LIMIT %s
             """,
-            (window_start, window_end, last_updated_at, last_id, rows_per_file),
+            (window_start, window_end, last_updated_at, last_id, page_size),
         )
     return cursor.fetchall()
 
@@ -144,7 +152,9 @@ def extract_articles(
     database_url: str | None,
     window_start: datetime,
     window_end: datetime,
-    output_dir: Path,
+    bucket: Bucket,
+    gcs_prefix: str,
+    fetch_size: int,
     rows_per_file: int,
     execution_type: str,
 ) -> dict[str, Any]:
@@ -155,6 +165,8 @@ def extract_articles(
         raise ValueError("window-end must include timezone information")
     if window_start >= window_end:
         raise ValueError("window-start must be before window-end")
+    if fetch_size < 1:
+        raise ValueError("fetch-size must be at least 1")
     if rows_per_file < 1:
         raise ValueError("rows-per-file must be at least 1")
     if execution_type not in EXECUTION_TYPES:
@@ -166,18 +178,18 @@ def extract_articles(
     batch_id = build_batch_id(window_start, window_end)
     attempt_id = uuid.uuid4().hex
     extracted_at = datetime.now(UTC)
-    attempt_dir = build_attempt_dir(
-        output_dir,
+    attempt_prefix = build_attempt_prefix(
+        gcs_prefix,
         extracted_at=extracted_at,
         batch_id=batch_id,
         attempt_id=attempt_id,
     )
-    attempt_dir.mkdir(parents=True)
 
     parts: list[dict[str, Any]] = []
     total_rows = 0
     last_updated_at: datetime | None = None
     last_id: int | None = None
+    source_exhausted = False
 
     with psycopg.connect(
         resolve_reader_database_url(database_url),
@@ -187,41 +199,78 @@ def extract_articles(
     ) as connection:
         connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         with connection.cursor() as cursor:
-            while True:
+            while not source_exhausted:
                 rows = fetch_page(
                     cursor,
                     window_start=window_start,
                     window_end=window_end,
                     last_updated_at=last_updated_at,
                     last_id=last_id,
-                    rows_per_file=rows_per_file,
+                    page_size=min(fetch_size, rows_per_file),
                 )
                 if not rows:
                     break
 
-                enriched_rows = [
-                    {
-                        **row,
-                        "_attempt_id": attempt_id,
-                        "_extracted_at": extracted_at,
-                    }
-                    for row in rows
-                ]
                 part_name = f"part-{len(parts):05d}.parquet"
-                part_path = attempt_dir / part_name
-                table = pa.Table.from_pylist(enriched_rows, schema=ARTICLE_SCHEMA)
-                pq.write_table(table, part_path, compression="snappy")
+                object_name = f"{attempt_prefix}/{part_name}"
+                blob = bucket.blob(object_name, chunk_size=GCS_UPLOAD_CHUNK_SIZE)
+                blob.content_type = "application/vnd.apache.parquet"
+                part_row_count = 0
+                with (
+                    blob.open(
+                        "wb",
+                        ignore_flush=True,
+                        if_generation_match=0,
+                    ) as output,
+                    pq.ParquetWriter(
+                        output,
+                        ARTICLE_SCHEMA,
+                        compression="snappy",
+                    ) as writer,
+                ):
+                    while rows:
+                        enriched_rows = [
+                            {
+                                **row,
+                                "_attempt_id": attempt_id,
+                                "_extracted_at": extracted_at,
+                            }
+                            for row in rows
+                        ]
+                        table = pa.Table.from_pylist(enriched_rows, schema=ARTICLE_SCHEMA)
+                        writer.write_table(table)
+
+                        row_count = len(rows)
+                        part_row_count += row_count
+                        total_rows += row_count
+                        last_updated_at = rows[-1]["updated_at"]
+                        last_id = rows[-1]["id"]
+
+                        remaining_rows = rows_per_file - part_row_count
+                        if remaining_rows == 0:
+                            break
+
+                        rows = fetch_page(
+                            cursor,
+                            window_start=window_start,
+                            window_end=window_end,
+                            last_updated_at=last_updated_at,
+                            last_id=last_id,
+                            page_size=min(fetch_size, remaining_rows),
+                        )
+                        if not rows:
+                            source_exhausted = True
+                blob.reload()
                 parts.append(
                     {
-                        "path": part_name,
-                        "row_count": len(rows),
-                        "size_bytes": part_path.stat().st_size,
-                        "sha256": sha256_file(part_path),
+                        "object": object_name,
+                        "uri": f"gs://{bucket.name}/{object_name}",
+                        "row_count": part_row_count,
+                        "size_bytes": blob.size,
+                        "crc32c": blob.crc32c,
+                        "generation": int(blob.generation),
                     }
                 )
-                total_rows += len(rows)
-                last_updated_at = rows[-1]["updated_at"]
-                last_id = rows[-1]["id"]
 
     manifest = {
         "manifest_version": 1,
@@ -237,11 +286,21 @@ def extract_articles(
         "part_count": len(parts),
         "parts": parts,
     }
-    with (attempt_dir / "_manifest.json").open("x", encoding="utf-8") as manifest_file:
-        json.dump(manifest, manifest_file, indent=2, sort_keys=True)
-        manifest_file.write("\n")
+    manifest_object = f"{attempt_prefix}/_manifest.json"
+    manifest_blob = bucket.blob(manifest_object)
+    manifest_blob.upload_from_string(
+        f"{json.dumps(manifest, indent=2, sort_keys=True)}\n",
+        content_type="application/json",
+        if_generation_match=0,
+    )
 
-    return {**manifest, "attempt_path": str(attempt_dir)}
+    return {
+        "batch_id": batch_id,
+        "attempt_id": attempt_id,
+        "row_count": total_rows,
+        "part_count": len(parts),
+        "manifest_uri": f"gs://{bucket.name}/{manifest_object}",
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -250,8 +309,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--database-url", help=f"Override {READER_DATABASE_URL_ENV}")
     parser.add_argument("--window-start", type=parse_utc_timestamp, required=True)
     parser.add_argument("--window-end", type=parse_utc_timestamp, required=True)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--rows-per-file", type=positive_int, default=50_000)
+    parser.add_argument("--gcs-bucket", help=f"Override {GCS_RAW_BUCKET_ENV}")
+    parser.add_argument("--gcs-prefix", default=DEFAULT_GCS_PREFIX)
+    parser.add_argument("--gcp-project-id", help=f"Override {GCP_PROJECT_ID_ENV}")
+    parser.add_argument(
+        "--fetch-size",
+        type=positive_int,
+        default=DEFAULT_FETCH_SIZE,
+        help="Maximum source rows held in one extraction page",
+    )
+    parser.add_argument(
+        "--rows-per-file",
+        type=positive_int,
+        default=DEFAULT_ROWS_PER_FILE,
+        help="Maximum rows written to one Parquet object",
+    )
     parser.add_argument(
         "--execution-type",
         choices=EXECUTION_TYPES,
@@ -264,11 +336,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     """Run one extraction from command-line arguments."""
     args = build_parser().parse_args()
+    client = storage.Client(project=args.gcp_project_id or os.environ.get(GCP_PROJECT_ID_ENV))
+    bucket = client.bucket(resolve_gcs_bucket_name(args.gcs_bucket))
     result = extract_articles(
         database_url=args.database_url,
         window_start=args.window_start,
         window_end=args.window_end,
-        output_dir=args.output_dir,
+        bucket=bucket,
+        gcs_prefix=args.gcs_prefix,
+        fetch_size=args.fetch_size,
         rows_per_file=args.rows_per_file,
         execution_type=args.execution_type,
     )
