@@ -21,9 +21,11 @@ data/
 
 # Terraform
 .terraform/
+.terraform.tfstate.lock.info
 *.tfstate
 *.tfstate.*
 *.tfplan
+terraform.tfvars
 
 # Editors and operating systems
 .idea/

@@ -12,8 +12,10 @@ data
 *.parquet
 *.csv
 .terraform
+.terraform.tfstate.lock.info
 *.tfstate*
 *.tfplan
+terraform.tfvars
 .idea
 .vscode
 .DS_Store

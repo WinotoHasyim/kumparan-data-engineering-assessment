@@ -9,6 +9,7 @@ incremental processing, source updates, and deletion handling.
 - Docker Engine or Docker Desktop
 - Docker Compose v2 (`docker compose`)
 - Google Cloud CLI (optional; only for manual ingestion to GCS)
+- Terraform 1.6 or newer (optional; only for provisioning GCP resources)
 
 Python, uv, PostgreSQL, and project packages run inside containers and do not
 need to be installed on the host. GNU Make is optional and provides shorter
@@ -70,14 +71,32 @@ make source-generate COUNT=100000 SEED=2026 BATCH_SIZE=5000
 make source-generate-million
 ```
 
-## Run ingestion manually
-
-Set `GCP_PROJECT_ID` and `GCS_RAW_BUCKET` in `.env`, then provide Google
-Application Default Credentials when running the container:
+## Provision GCP resources
 
 ```bash
 gcloud auth application-default login
+cp infrastructure/terraform/terraform.tfvars.example \
+  infrastructure/terraform/terraform.tfvars
+```
 
+Set `project_id` and `raw_bucket_name` in `terraform.tfvars`, then run:
+
+```bash
+terraform -chdir=infrastructure/terraform init
+terraform -chdir=infrastructure/terraform plan -out=deployment.tfplan
+terraform -chdir=infrastructure/terraform apply deployment.tfplan
+```
+
+## Run ingestion manually
+
+```bash
+cp .env.example .env
+```
+
+Set `GCP_PROJECT_ID` and `GCS_RAW_BUCKET` in `.env`, using the same values as
+`terraform.tfvars`.
+
+```bash
 export GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH="$(
   gcloud info --format='value(config.paths.global_config_dir)'
 )/application_default_credentials.json"
