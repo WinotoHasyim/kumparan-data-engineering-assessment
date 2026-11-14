@@ -126,6 +126,7 @@ def test_extract_uses_half_open_window_and_keyset_pagination() -> None:
             fetch_size=1,
             rows_per_file=2,
             execution_type="SCHEDULED",
+            attempt_id="kestra-execution-test",
         )
 
         manifest_object = result["manifest_uri"].removeprefix(f"gs://{bucket.name}/")
@@ -150,6 +151,7 @@ def test_extract_uses_half_open_window_and_keyset_pagination() -> None:
         )
         assert manifest_object == f"{expected_prefix}/_manifest.json"
         assert manifest["execution_type"] == "SCHEDULED"
+        assert manifest["attempt_id"] == "kestra-execution-test"
         assert manifest["row_count"] == 3
         assert manifest["part_count"] == 2
         assert [part["row_count"] for part in manifest["parts"]] == [2, 1]

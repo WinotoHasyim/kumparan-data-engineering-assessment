@@ -8,7 +8,7 @@ incremental processing, source updates, and deletion handling.
 
 - Docker Engine or Docker Desktop
 - Docker Compose v2 (`docker compose`)
-- Google Cloud CLI (optional; only for manual ingestion to GCS)
+- Google Cloud CLI (optional; only for GCP provisioning and ingestion)
 - Terraform 1.6 or newer (optional; only for provisioning GCP resources)
 
 Python, uv, PostgreSQL, and project packages run inside containers and do not
@@ -87,7 +87,7 @@ terraform -chdir=infrastructure/terraform plan -out=deployment.tfplan
 terraform -chdir=infrastructure/terraform apply deployment.tfplan
 ```
 
-## Run ingestion manually
+## Configure ingestion
 
 ```bash
 cp .env.example .env
@@ -102,7 +102,11 @@ export GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH="$(
 )/application_default_credentials.json"
 
 test -r "$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH"
+```
 
+## Run ingestion manually
+
+```bash
 docker compose run --build --rm \
   --mount "type=bind,source=$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH,target=/run/secrets/gcp.json,readonly" \
   --env GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gcp.json \
@@ -112,6 +116,22 @@ docker compose run --build --rm \
   --window-end 2026-11-12T14:00:00Z \
   --execution-type BACKFILL
 ```
+
+## Run ingestion with Kestra
+
+```bash
+docker compose build article-ingestion
+docker compose up -d --wait source-postgres kestra
+```
+
+Or, using a Make command:
+
+```bash
+make orchestration-up
+```
+
+Open <http://localhost:8080> and sign in with the local credentials from
+`docker-compose.yml`.
 
 ## Continuous source activity
 

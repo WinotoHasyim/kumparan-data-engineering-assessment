@@ -5,7 +5,7 @@ SEED ?= 2026
 START_ID ?= 2000000
 BATCH_SIZE ?= 5000
 
-.PHONY: help build lint test source-up source-down source-reset source-list source-generate source-generate-million source-live-up source-live-down source-live-logs
+.PHONY: help build lint test source-up source-down source-reset source-list source-generate source-generate-million source-live-up source-live-down source-live-logs orchestration-up orchestration-down orchestration-logs
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "%-24s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -57,3 +57,13 @@ source-live-down: ## Stop continuous changes without deleting source data
 
 source-live-logs: ## Follow continuous workload operations
 	docker compose --profile live logs -f source-workload
+
+orchestration-up: ## Build ingestion and start PostgreSQL plus Kestra
+	docker compose build article-ingestion
+	docker compose up -d --wait source-postgres kestra
+
+orchestration-down: ## Stop Kestra and its metadata database
+	docker compose stop kestra kestra-postgres
+
+orchestration-logs: ## Follow Kestra server logs
+	docker compose logs -f kestra

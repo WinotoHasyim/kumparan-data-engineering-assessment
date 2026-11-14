@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -31,6 +32,7 @@ EXECUTION_TYPES = (
     "BACKFILL",
     "SCHEDULED",
 )
+ATTEMPT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 ARTICLE_SCHEMA = pa.schema(
     [
@@ -76,6 +78,16 @@ def build_batch_id(window_start: datetime, window_end: datetime) -> str:
     start = window_start.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     end = window_end.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"{start}_{end}"
+
+
+def resolve_attempt_id(explicit_id: str | None = None) -> str:
+    """Return a path-safe caller ID or generate one for standalone runs."""
+    attempt_id = explicit_id or uuid.uuid4().hex
+    if not ATTEMPT_ID_PATTERN.fullmatch(attempt_id):
+        raise ValueError(
+            "attempt-id must be 1-128 characters using letters, numbers, underscores, or hyphens"
+        )
+    return attempt_id
 
 
 def resolve_gcs_bucket_name(explicit_name: str | None = None) -> str:
@@ -157,6 +169,7 @@ def extract_articles(
     fetch_size: int,
     rows_per_file: int,
     execution_type: str,
+    attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """Extract one interval and publish its manifest after all parts are complete."""
     if window_start.tzinfo is None or window_start.utcoffset() is None:
@@ -176,7 +189,7 @@ def extract_articles(
     window_start = window_start.astimezone(UTC)
     window_end = window_end.astimezone(UTC)
     batch_id = build_batch_id(window_start, window_end)
-    attempt_id = uuid.uuid4().hex
+    attempt_id = resolve_attempt_id(attempt_id)
     extracted_at = datetime.now(UTC)
     attempt_prefix = build_attempt_prefix(
         gcs_prefix,
@@ -330,6 +343,10 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Reason this extraction attempt was started",
     )
+    parser.add_argument(
+        "--attempt-id",
+        help="Stable external execution ID; generated automatically when omitted",
+    )
     return parser
 
 
@@ -347,6 +364,7 @@ def main() -> None:
         fetch_size=args.fetch_size,
         rows_per_file=args.rows_per_file,
         execution_type=args.execution_type,
+        attempt_id=args.attempt_id,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
 
