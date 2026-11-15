@@ -1,0 +1,88 @@
+id: articles_historical_backfill
+namespace: kumparan.dev
+
+description: Load a bounded historical interval in resumable monthly chunks.
+
+concurrency:
+  limit: 1
+
+inputs:
+  - id: window_start
+    type: DATETIME
+    description: Inclusive historical lower bound.
+
+  - id: window_end
+    type: DATETIME
+    description: Exclusive historical upper bound.
+
+tasks:
+  - id: plan_chunks
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: kumparan-data-engineering-assessment:runtime
+    timeout: PT5M
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      pullPolicy: NEVER
+      networkMode: kumparan-data-engineering-assessment_default
+    env:
+      WINDOW_START: "{{ inputs.window_start }}"
+      WINDOW_END: "{{ inputs.window_end }}"
+    commands:
+      - |
+        python - <<'PY'
+        import json
+        import os
+        import subprocess
+        import sys
+
+        command = [
+            sys.executable,
+            "-m",
+            "ingestion.plan_backfill",
+            "--window-start",
+            os.environ["WINDOW_START"],
+            "--window-end",
+            os.environ["WINDOW_END"],
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True)
+        if completed.stderr:
+            print(completed.stderr, file=sys.stderr, end="")
+        if completed.returncode != 0:
+            raise SystemExit(completed.returncode)
+
+        result = json.loads(completed.stdout)
+        print(f"::{json.dumps({'outputs': result}, separators=(',', ':'))}::")
+        PY
+
+  - id: ingest_chunks
+    type: io.kestra.plugin.core.flow.ForEach
+    values: "{{ outputs.plan_chunks.vars.chunks }}"
+    concurrencyLimit: 2
+    tasks:
+      - id: ingest_window
+        type: io.kestra.plugin.core.flow.Subflow
+        namespace: kumparan.dev
+        flowId: articles_window_ingest
+        wait: true
+        transmitFailed: true
+        restartBehavior: RETRY_FAILED
+        inputs:
+          window_start: "{{ fromJson(taskrun.value).window_start }}"
+          window_end: "{{ fromJson(taskrun.value).window_end }}"
+          execution_type: BACKFILL
+
+  - id: transform
+    type: io.kestra.plugin.core.flow.Subflow
+    namespace: kumparan.dev
+    flowId: articles_transform
+    wait: true
+    transmitFailed: true
+    restartBehavior: RETRY_FAILED
+
+errors:
+  - id: log_backfill_failure
+    type: io.kestra.plugin.core.log.Log
+    level: ERROR
+    message: |
+      Historical article backfill failed. Successful chunk executions remain loaded;
+      inspect the error, then restart the parent execution from its failed task.
