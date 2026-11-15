@@ -93,8 +93,8 @@ terraform -chdir=infrastructure/terraform apply deployment.tfplan
 cp .env.example .env
 ```
 
-Set `GCP_PROJECT_ID` and `GCS_RAW_BUCKET` in `.env`, using the same values as
-`terraform.tfvars`.
+Set the GCP values in `.env`, then keep the bucket, datasets, and location
+aligned with `terraform.tfvars`.
 
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH="$(
@@ -132,6 +132,12 @@ make orchestration-up
 
 Open <http://localhost:8080> and sign in with the local credentials from
 `docker-compose.yml`.
+
+Use these flows:
+
+- `articles_window_ingest` processes one explicit interval through BigQuery.
+- `articles_hourly` runs hourly with a one-hour source grace period.
+- `articles_historical_backfill` splits a bounded range into monthly chunks.
 
 ## Continuous source activity
 

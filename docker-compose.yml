@@ -113,6 +113,9 @@ services:
     environment:
       ENV_GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
       ENV_GCS_RAW_BUCKET: ${GCS_RAW_BUCKET:-}
+      ENV_BIGQUERY_LANDING_DATASET: ${BIGQUERY_LANDING_DATASET:-}
+      ENV_BIGQUERY_ANALYTICS_DATASET: ${BIGQUERY_ANALYTICS_DATASET:-}
+      ENV_BIGQUERY_LOCATION: ${BIGQUERY_LOCATION:-}
       ENV_SOURCE_READER_DATABASE_URL: >-
         postgresql://source_reader:source_reader@source-postgres:5432/${POSTGRES_DB:-source_db}
       ENV_GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH: >-
@@ -120,12 +123,14 @@ services:
       KESTRA_POSTGRES_PASSWORD: ${KESTRA_POSTGRES_PASSWORD:-kestra-local-only}
       KESTRA_ADMIN_EMAIL: ${KESTRA_ADMIN_EMAIL:-admin@localhost.dev}
       KESTRA_ADMIN_PASSWORD: ${KESTRA_ADMIN_PASSWORD:-Admin1234!}
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp.json
     volumes:
       - kestra-data:/app/storage
       - ./orchestration/kestra/application.yml:/etc/kestra/application.yml:ro
       - ./orchestration/kestra/flows:/app/flows
       - /var/run/docker.sock:/var/run/docker.sock
       - ${KESTRA_TMP_DIR:-/tmp/kumparan-kestra-wd}:/tmp/kestra-wd
+      - ${GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH:-/dev/null}:/run/secrets/gcp.json:ro
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
