@@ -6,7 +6,7 @@ from ingestion.manifest import resolve_manifest, validate_manifest
 
 MANIFEST_URI = (
     "gs://test-bucket/raw/source=postgres/entity=articles/ingest_date=2026-11-15/"
-    "window=20261115T010000Z_20261115T020000Z/attempt=abc/_manifest.json"
+    "window=updated_at_20261115T010000Z_20261115T020000Z/attempt=abc/_manifest.json"
 )
 
 
@@ -29,7 +29,8 @@ def build_manifest(*, row_count: int = 3) -> dict:
         "source": "postgres",
         "entity": "articles",
         "attempt_id": "abc",
-        "batch_id": "20261115T010000Z_20261115T020000Z",
+        "batch_id": "updated_at_20261115T010000Z_20261115T020000Z",
+        "cursor_column": "updated_at",
         "part_count": len(parts),
         "row_count": row_count,
         "parts": parts,
@@ -79,7 +80,8 @@ def test_resolves_exact_manifest_parts() -> None:
 
     assert result == {
         "attempt_id": "abc",
-        "batch_id": "20261115T010000Z_20261115T020000Z",
+        "batch_id": "updated_at_20261115T010000Z_20261115T020000Z",
+        "cursor_column": "updated_at",
         "manifest_uri": MANIFEST_URI,
         "part_uris": [manifest["parts"][0]["uri"]],
         "row_count": 3,
@@ -118,6 +120,14 @@ def test_rejects_missing_batch_identity() -> None:
     del manifest["attempt_id"]
 
     with pytest.raises(ValueError, match="attempt_id"):
+        validate_manifest(manifest, MANIFEST_URI)
+
+
+def test_rejects_batch_identity_for_another_cursor() -> None:
+    manifest = build_manifest()
+    manifest["cursor_column"] = "created_at"
+
+    with pytest.raises(ValueError, match="batch_id"):
         validate_manifest(manifest, MANIFEST_URI)
 
 

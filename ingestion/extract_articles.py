@@ -32,6 +32,7 @@ EXECUTION_TYPES = (
     "BACKFILL",
     "SCHEDULED",
 )
+CURSOR_COLUMNS = ("created_at", "updated_at")
 ATTEMPT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 ARTICLE_SCHEMA = pa.schema(
@@ -73,11 +74,22 @@ def utc_text(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
-def build_batch_id(window_start: datetime, window_end: datetime) -> str:
+def build_batch_id(cursor_column: str, window_start: datetime, window_end: datetime) -> str:
     """Build a stable identifier for one extraction interval."""
     start = window_start.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     end = window_end.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return f"{start}_{end}"
+    return f"{cursor_column}_{start}_{end}"
+
+
+def resolve_cursor_column(execution_type: str, explicit_column: str | None = None) -> str:
+    """Select the stable bootstrap or change-tracking cursor."""
+    cursor_column = explicit_column or (
+        "created_at" if execution_type == "BACKFILL" else "updated_at"
+    )
+    if cursor_column not in CURSOR_COLUMNS:
+        allowed = ", ".join(CURSOR_COLUMNS)
+        raise ValueError(f"cursor-column must be one of: {allowed}")
+    return cursor_column
 
 
 def resolve_attempt_id(explicit_id: str | None = None) -> str:
@@ -126,19 +138,23 @@ def fetch_page(
     *,
     window_start: datetime,
     window_end: datetime,
-    last_updated_at: datetime | None,
+    cursor_column: str,
+    last_cursor_value: datetime | None,
     last_id: int | None,
     page_size: int,
 ) -> list[dict[str, Any]]:
     """Fetch one stable keyset page from the extraction interval."""
-    if last_updated_at is None:
+    if cursor_column not in CURSOR_COLUMNS:
+        raise ValueError(f"unsupported cursor column: {cursor_column}")
+
+    if last_cursor_value is None:
         cursor.execute(
             f"""
             SELECT {ARTICLE_COLUMNS}
             FROM public.articles
-            WHERE updated_at >= %s
-              AND updated_at < %s
-            ORDER BY updated_at, id
+            WHERE {cursor_column} >= %s
+              AND {cursor_column} < %s
+            ORDER BY {cursor_column}, id
             LIMIT %s
             """,
             (window_start, window_end, page_size),
@@ -148,13 +164,13 @@ def fetch_page(
             f"""
             SELECT {ARTICLE_COLUMNS}
             FROM public.articles
-            WHERE updated_at >= %s
-              AND updated_at < %s
-              AND (updated_at, id) > (%s, %s)
-            ORDER BY updated_at, id
+            WHERE {cursor_column} >= %s
+              AND {cursor_column} < %s
+              AND ({cursor_column}, id) > (%s, %s)
+            ORDER BY {cursor_column}, id
             LIMIT %s
             """,
-            (window_start, window_end, last_updated_at, last_id, page_size),
+            (window_start, window_end, last_cursor_value, last_id, page_size),
         )
     return cursor.fetchall()
 
@@ -169,6 +185,7 @@ def extract_articles(
     fetch_size: int,
     rows_per_file: int,
     execution_type: str,
+    cursor_column: str | None = None,
     attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """Extract one interval and publish its manifest after all parts are complete."""
@@ -185,10 +202,11 @@ def extract_articles(
     if execution_type not in EXECUTION_TYPES:
         allowed = ", ".join(EXECUTION_TYPES)
         raise ValueError(f"execution-type must be one of: {allowed}")
+    cursor_column = resolve_cursor_column(execution_type, cursor_column)
 
     window_start = window_start.astimezone(UTC)
     window_end = window_end.astimezone(UTC)
-    batch_id = build_batch_id(window_start, window_end)
+    batch_id = build_batch_id(cursor_column, window_start, window_end)
     attempt_id = resolve_attempt_id(attempt_id)
     extracted_at = datetime.now(UTC)
     attempt_prefix = build_attempt_prefix(
@@ -200,7 +218,7 @@ def extract_articles(
 
     parts: list[dict[str, Any]] = []
     total_rows = 0
-    last_updated_at: datetime | None = None
+    last_cursor_value: datetime | None = None
     last_id: int | None = None
     source_exhausted = False
 
@@ -217,7 +235,8 @@ def extract_articles(
                     cursor,
                     window_start=window_start,
                     window_end=window_end,
-                    last_updated_at=last_updated_at,
+                    cursor_column=cursor_column,
+                    last_cursor_value=last_cursor_value,
                     last_id=last_id,
                     page_size=min(fetch_size, rows_per_file),
                 )
@@ -256,7 +275,7 @@ def extract_articles(
                         row_count = len(rows)
                         part_row_count += row_count
                         total_rows += row_count
-                        last_updated_at = rows[-1]["updated_at"]
+                        last_cursor_value = rows[-1][cursor_column]
                         last_id = rows[-1]["id"]
 
                         remaining_rows = rows_per_file - part_row_count
@@ -267,7 +286,8 @@ def extract_articles(
                             cursor,
                             window_start=window_start,
                             window_end=window_end,
-                            last_updated_at=last_updated_at,
+                            cursor_column=cursor_column,
+                            last_cursor_value=last_cursor_value,
                             last_id=last_id,
                             page_size=min(fetch_size, remaining_rows),
                         )
@@ -290,6 +310,7 @@ def extract_articles(
         "source": SOURCE_NAME,
         "entity": ENTITY_NAME,
         "execution_type": execution_type,
+        "cursor_column": cursor_column,
         "batch_id": batch_id,
         "attempt_id": attempt_id,
         "extracted_at": utc_text(extracted_at),
@@ -312,6 +333,7 @@ def extract_articles(
         "attempt_id": attempt_id,
         "row_count": total_rows,
         "part_count": len(parts),
+        "cursor_column": cursor_column,
         "manifest_uri": f"gs://{bucket.name}/{manifest_object}",
     }
 
@@ -344,6 +366,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reason this extraction attempt was started",
     )
     parser.add_argument(
+        "--cursor-column",
+        choices=CURSOR_COLUMNS,
+        help=(
+            "Source timestamp cursor; defaults to created_at for backfill and updated_at otherwise"
+        ),
+    )
+    parser.add_argument(
         "--attempt-id",
         help="Stable external execution ID; generated automatically when omitted",
     )
@@ -364,6 +393,7 @@ def main() -> None:
         fetch_size=args.fetch_size,
         rows_per_file=args.rows_per_file,
         execution_type=args.execution_type,
+        cursor_column=args.cursor_column,
         attempt_id=args.attempt_id,
     )
     print(json.dumps(result, indent=2, sort_keys=True))

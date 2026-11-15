@@ -13,6 +13,7 @@ GCP_PROJECT_ID_ENV = "GCP_PROJECT_ID"
 EXPECTED_MANIFEST_VERSION = 1
 EXPECTED_SOURCE = "postgres"
 EXPECTED_ENTITY = "articles"
+EXPECTED_CURSOR_COLUMNS = ("created_at", "updated_at")
 
 
 def parse_gcs_uri(uri: str) -> tuple[str, str]:
@@ -49,6 +50,13 @@ def validate_manifest(manifest: dict[str, Any], manifest_uri: str) -> list[str]:
     for field in ("attempt_id", "batch_id"):
         if not isinstance(manifest.get(field), str) or not manifest[field]:
             raise ValueError(f"manifest {field} must be a non-empty string")
+
+    cursor_column = manifest.get("cursor_column")
+    if cursor_column not in EXPECTED_CURSOR_COLUMNS:
+        allowed = ", ".join(EXPECTED_CURSOR_COLUMNS)
+        raise ValueError(f"manifest cursor_column must be one of: {allowed}")
+    if not manifest["batch_id"].startswith(f"{cursor_column}_"):
+        raise ValueError("manifest batch_id must identify its cursor column")
 
     manifest_row_count = manifest.get("row_count")
     part_count = manifest.get("part_count")
@@ -141,6 +149,7 @@ def resolve_manifest(*, manifest_uri: str, storage_client: storage.Client) -> di
     return {
         "attempt_id": manifest["attempt_id"],
         "batch_id": manifest["batch_id"],
+        "cursor_column": manifest["cursor_column"],
         "manifest_uri": manifest_uri,
         "part_uris": part_uris,
         "row_count": manifest["row_count"],

@@ -151,6 +151,8 @@ def test_extract_uses_half_open_window_and_keyset_pagination() -> None:
         )
         assert manifest_object == f"{expected_prefix}/_manifest.json"
         assert manifest["execution_type"] == "SCHEDULED"
+        assert manifest["cursor_column"] == "updated_at"
+        assert manifest["batch_id"].startswith("updated_at_")
         assert manifest["attempt_id"] == "kestra-execution-test"
         assert manifest["row_count"] == 3
         assert manifest["part_count"] == 2
@@ -161,6 +163,59 @@ def test_extract_uses_half_open_window_and_keyset_pagination() -> None:
             part["uri"] == f"gs://{bucket.name}/{part['object']}" for part in manifest["parts"]
         )
         assert bucket.write_order[-1] == manifest_object
+    finally:
+        delete_test_rows(admin_url)
+
+
+@pytest.mark.integration
+def test_backfill_uses_created_at_instead_of_updated_at() -> None:
+    admin_url, reader_url = require_database_urls()
+    lower = datetime(2097, 1, 1, tzinfo=UTC)
+    upper = datetime(2097, 2, 1, tzinfo=UTC)
+
+    delete_test_rows(admin_url)
+    with psycopg.connect(admin_url) as connection, connection.cursor() as cursor:
+        cursor.executemany(
+            """
+            INSERT INTO public.articles (
+                id, title, content, author_id, created_at, updated_at
+            )
+            VALUES (%s, %s, 'backfill cursor test', 1, %s, %s)
+            """,
+            [
+                (TEST_IDS[0], "created in window", lower, datetime(2098, 1, 1, tzinfo=UTC)),
+                (
+                    TEST_IDS[1],
+                    "only updated in window",
+                    datetime(2096, 1, 1, tzinfo=UTC),
+                    lower,
+                ),
+            ],
+        )
+
+    try:
+        bucket = FakeBucket()
+        result = extract_articles(
+            database_url=reader_url,
+            window_start=lower,
+            window_end=upper,
+            bucket=bucket,
+            gcs_prefix="raw",
+            fetch_size=1,
+            rows_per_file=1,
+            execution_type="BACKFILL",
+            attempt_id="backfill-created-at-test",
+        )
+
+        manifest_object = result["manifest_uri"].removeprefix(f"gs://{bucket.name}/")
+        manifest = json.loads(bucket.objects[manifest_object])
+        parquet_file = pq.ParquetFile(
+            pa.BufferReader(bucket.objects[manifest["parts"][0]["object"]])
+        )
+
+        assert [row["id"] for row in parquet_file.read().to_pylist()] == [TEST_IDS[0]]
+        assert manifest["cursor_column"] == "created_at"
+        assert manifest["batch_id"].startswith("created_at_")
     finally:
         delete_test_rows(admin_url)
 
@@ -186,5 +241,6 @@ def test_extract_writes_manifest_for_empty_window() -> None:
 
     assert manifest["row_count"] == 0
     assert manifest["part_count"] == 0
+    assert manifest["cursor_column"] == "created_at"
     assert manifest["parts"] == []
     assert bucket.write_order == [manifest_object]
