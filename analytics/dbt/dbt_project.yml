@@ -1,0 +1,33 @@
+name: kumparan_articles
+version: 1.0.0
+config-version: 2
+
+require-dbt-version: [">=1.10.0", "<2.0.0"]
+
+profile: kumparan_articles
+
+model-paths: ["models"]
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  kumparan_articles:
+    +persist_docs:
+      relation: true
+      columns: true
+    staging:
+      +materialized: view
+      +labels:
+        layer: staging
+        managed_by: dbt
+    core:
+      +labels:
+        layer: core
+        managed_by: dbt
+    marts:
+      +materialized: table
+      +labels:
+        layer: marts
+        managed_by: dbt
+
+flags:
+  require_generic_test_arguments_property: true

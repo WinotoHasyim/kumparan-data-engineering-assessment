@@ -1,0 +1,66 @@
+version: 2
+
+models:
+  - name: articles_current
+    description: Latest accepted source state for every article identifier, including soft-deleted rows.
+    columns:
+      - name: id
+        description: Canonical article grain.
+        data_tests: [not_null, unique]
+      - name: title
+        description: Latest observed article title.
+        data_tests: [not_null]
+      - name: content
+        description: Latest observed article body.
+        data_tests: [not_null]
+      - name: published_at
+        description: UTC publication timestamp; null while an article is unpublished.
+      - name: author_id
+        description: Latest observed source author identifier.
+        data_tests: [not_null]
+      - name: created_at
+        description: UTC timestamp at which the source article was created.
+        data_tests: [not_null]
+      - name: updated_at
+        description: UTC timestamp of the latest accepted source change.
+        data_tests: [not_null]
+      - name: deleted_at
+        description: UTC soft-deletion timestamp; null while the article is active.
+      - name: _attempt_id
+        description: Extraction attempt that supplied the accepted current state.
+        data_tests: [not_null]
+      - name: _extracted_at
+        description: UTC timestamp at which the accepted state was extracted.
+        data_tests: [not_null]
+
+  - name: articles_active
+    description: Consumer-facing current articles that have not been soft deleted.
+    columns:
+      - name: id
+        description: Canonical article identifier.
+        data_tests: [not_null, unique]
+      - name: title
+        description: Current article title.
+        data_tests: [not_null]
+      - name: content
+        description: Current article body.
+        data_tests: [not_null]
+      - name: published_at
+        description: UTC publication timestamp; null while an article is unpublished.
+      - name: author_id
+        description: Current source author identifier.
+        data_tests: [not_null]
+      - name: created_at
+        description: UTC timestamp at which the source article was created.
+        data_tests: [not_null]
+      - name: updated_at
+        description: UTC timestamp of the latest accepted source change.
+        data_tests: [not_null]
+      - name: deleted_at
+        description: Always null because this view contains only active articles.
+      - name: _attempt_id
+        description: Extraction attempt that supplied the current state.
+        data_tests: [not_null]
+      - name: _extracted_at
+        description: UTC timestamp at which the current state was extracted.
+        data_tests: [not_null]

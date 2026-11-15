@@ -1,0 +1,34 @@
+version: 2
+
+models:
+  - name: stg_articles
+    description: Source-conformed article observations with ingestion lineage preserved.
+    columns:
+      - name: id
+        description: Source article identifier.
+        data_tests: [not_null]
+      - name: title
+        description: Article title as observed in PostgreSQL.
+        data_tests: [not_null]
+      - name: content
+        description: Article body as observed in PostgreSQL.
+        data_tests: [not_null]
+      - name: published_at
+        description: UTC publication timestamp; null while an article is unpublished.
+      - name: author_id
+        description: Source author identifier.
+        data_tests: [not_null]
+      - name: created_at
+        description: UTC timestamp at which the source article was created.
+        data_tests: [not_null]
+      - name: updated_at
+        description: Source-controlled version timestamp in UTC.
+        data_tests: [not_null]
+      - name: deleted_at
+        description: UTC soft-deletion timestamp; null while the article is active.
+      - name: _attempt_id
+        description: Extraction-attempt lineage and deterministic final tie-breaker, not a freshness timestamp.
+        data_tests: [not_null]
+      - name: _extracted_at
+        description: UTC timestamp at which the attempt read the source snapshot.
+        data_tests: [not_null]

@@ -1,0 +1,39 @@
+version: 2
+
+sources:
+  - name: landing
+    description: Manifest-selected article observations loaded from immutable GCS attempts.
+    database: "{{ env_var('DBT_GCP_PROJECT_ID') }}"
+    schema: "{{ env_var('DBT_LANDING_DATASET') }}"
+    tables:
+      - name: article_observations
+        description: Append-only article observations; multiple deliveries may exist for one article ID.
+        columns:
+          - name: id
+            description: Source article identifier.
+            data_tests: [not_null]
+          - name: title
+            description: Article title as observed in PostgreSQL.
+            data_tests: [not_null]
+          - name: content
+            description: Article body as observed in PostgreSQL.
+            data_tests: [not_null]
+          - name: published_at
+            description: UTC publication timestamp; null while an article is unpublished.
+          - name: author_id
+            description: Source author identifier.
+            data_tests: [not_null]
+          - name: created_at
+            description: UTC timestamp at which the source article was created.
+            data_tests: [not_null]
+          - name: updated_at
+            description: UTC source-controlled version timestamp.
+            data_tests: [not_null]
+          - name: deleted_at
+            description: UTC soft-deletion timestamp; null while the article is active.
+          - name: _attempt_id
+            description: Extraction-attempt lineage and deterministic final tie-breaker, not a freshness timestamp.
+            data_tests: [not_null]
+          - name: _extracted_at
+            description: UTC timestamp at which the attempt read the source row.
+            data_tests: [not_null]

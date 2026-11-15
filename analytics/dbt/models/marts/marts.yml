@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: active_article_author_daily
+    description: Currently active published articles grouped by original publication date and author.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - published_date
+              - author_id
+    columns:
+      - name: published_date
+        description: UTC calendar date on which the currently active article was published.
+        data_tests: [not_null]
+      - name: author_id
+        description: Source author identifier.
+        data_tests: [not_null]
+      - name: active_published_article_count
+        description: Number of articles that are currently active and were published on this date.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: latest_article_update_at
+        description: Latest source update timestamp among articles in the group.
+        data_tests: [not_null]

@@ -14,6 +14,12 @@ __pycache__/
 .coverage
 htmlcov/
 
+# dbt build artifacts
+analytics/dbt/logs/
+analytics/dbt/target/
+analytics/dbt/dbt_packages/
+analytics/dbt/.user.yml
+
 # Generated data
 data/
 *.parquet
