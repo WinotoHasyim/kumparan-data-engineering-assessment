@@ -32,6 +32,7 @@ tasks:
     env:
       SOURCE_READER_DATABASE_URL: "{{ envs.source_reader_database_url }}"
       GCP_PROJECT_ID: "{{ envs.gcp_project_id }}"
+      GOOGLE_CLOUD_PROJECT: "{{ envs.gcp_project_id }}"
       GCS_RAW_BUCKET: "{{ envs.gcs_raw_bucket }}"
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp.json
       WINDOW_START: "{{ inputs.window_start }}"
@@ -81,6 +82,7 @@ tasks:
         - "{{ envs.google_application_credentials_host_path }}:/run/secrets/gcp.json:ro"
     env:
       GCP_PROJECT_ID: "{{ envs.gcp_project_id }}"
+      GOOGLE_CLOUD_PROJECT: "{{ envs.gcp_project_id }}"
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp.json
       MANIFEST_URI: "{{ outputs.extract_articles.vars.manifest_uri }}"
     commands:

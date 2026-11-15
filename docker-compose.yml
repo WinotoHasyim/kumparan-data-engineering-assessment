@@ -77,6 +77,7 @@ services:
       SOURCE_READER_DATABASE_URL: >-
         postgresql://source_reader:source_reader@source-postgres:5432/${POSTGRES_DB:-source_db}
       GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
+      GOOGLE_CLOUD_PROJECT: ${GCP_PROJECT_ID:-}
       GCS_RAW_BUCKET: ${GCS_RAW_BUCKET:-}
     depends_on:
       source-postgres:
@@ -112,6 +113,7 @@ services:
       - /etc/kestra/application.yml
     environment:
       ENV_GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
+      GOOGLE_CLOUD_PROJECT: ${GCP_PROJECT_ID:-}
       ENV_GCS_RAW_BUCKET: ${GCS_RAW_BUCKET:-}
       ENV_BIGQUERY_LANDING_DATASET: ${BIGQUERY_LANDING_DATASET:-}
       ENV_BIGQUERY_ANALYTICS_DATASET: ${BIGQUERY_ANALYTICS_DATASET:-}

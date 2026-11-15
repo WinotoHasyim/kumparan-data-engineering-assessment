@@ -19,6 +19,7 @@ tasks:
         - "{{ envs.google_application_credentials_host_path }}:/run/secrets/gcp.json:ro"
     env:
       DBT_GCP_PROJECT_ID: "{{ envs.gcp_project_id }}"
+      GOOGLE_CLOUD_PROJECT: "{{ envs.gcp_project_id }}"
       DBT_LANDING_DATASET: "{{ envs.bigquery_landing_dataset }}"
       DBT_ANALYTICS_DATASET: "{{ envs.bigquery_analytics_dataset }}"
       DBT_GCP_LOCATION: "{{ envs.bigquery_location }}"
