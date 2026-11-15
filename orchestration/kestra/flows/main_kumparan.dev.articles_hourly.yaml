@@ -21,13 +21,17 @@ tasks:
         {{ trigger.date | dateAdd(-1, 'HOURS') | date("yyyy-MM-dd'T'HH:mm:ssXXX", timeZone="UTC") }}
       execution_type: SCHEDULED
 
-  - id: transform
-    type: io.kestra.plugin.core.flow.Subflow
-    namespace: kumparan.dev
-    flowId: articles_transform
-    wait: true
-    transmitFailed: true
-    restartBehavior: RETRY_FAILED
+  - id: transform_if_non_empty
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ outputs.ingest_window.outputs.row_count > 0 }}"
+    then:
+      - id: transform
+        type: io.kestra.plugin.core.flow.Subflow
+        namespace: kumparan.dev
+        flowId: articles_transform
+        wait: true
+        transmitFailed: true
+        restartBehavior: RETRY_FAILED
 
 triggers:
   - id: hourly

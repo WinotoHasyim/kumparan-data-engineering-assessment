@@ -71,13 +71,19 @@ tasks:
           window_end: "{{ fromJson(taskrun.value).window_end }}"
           execution_type: BACKFILL
 
-  - id: transform
-    type: io.kestra.plugin.core.flow.Subflow
-    namespace: kumparan.dev
-    flowId: articles_transform
-    wait: true
-    transmitFailed: true
-    restartBehavior: RETRY_FAILED
+  - id: transform_if_non_empty
+    type: io.kestra.plugin.core.flow.If
+    condition: >-
+      {{ (outputs.ingest_window |
+          jq('[.[] | .outputs.row_count] | add // 0')) > 0 }}
+    then:
+      - id: transform
+        type: io.kestra.plugin.core.flow.Subflow
+        namespace: kumparan.dev
+        flowId: articles_transform
+        wait: true
+        transmitFailed: true
+        restartBehavior: RETRY_FAILED
 
 errors:
   - id: log_backfill_failure
