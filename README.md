@@ -119,6 +119,10 @@ bq head --max_rows=10 \
   "$GCP_PROJECT_ID:$BIGQUERY_ANALYTICS_DATASET.active_article_author_daily"
 ```
 
+## Execution evidence
+
+See [execution evidence](docs/EVIDENCE.md) for the end-to-end run and one-million-row volume test.
+
 ## Available flows
 
 - `articles_window_ingest`: extract and load one explicit interval.
