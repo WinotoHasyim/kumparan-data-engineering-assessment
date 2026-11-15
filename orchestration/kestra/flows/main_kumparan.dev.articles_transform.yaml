@@ -1,0 +1,36 @@
+id: articles_transform
+namespace: kumparan.dev
+
+description: Build and test staging, current-state, active, and analytical article models.
+
+concurrency:
+  limit: 1
+
+tasks:
+  - id: dbt_build
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: kumparan-data-engineering-assessment:runtime
+    timeout: PT30M
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      pullPolicy: NEVER
+      networkMode: kumparan-data-engineering-assessment_default
+      volumes:
+        - "{{ envs.google_application_credentials_host_path }}:/run/secrets/gcp.json:ro"
+    env:
+      DBT_GCP_PROJECT_ID: "{{ envs.gcp_project_id }}"
+      DBT_LANDING_DATASET: "{{ envs.bigquery_landing_dataset }}"
+      DBT_ANALYTICS_DATASET: "{{ envs.bigquery_analytics_dataset }}"
+      DBT_GCP_LOCATION: "{{ envs.bigquery_location }}"
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp.json
+    commands:
+      - >-
+        dbt build
+        --project-dir /app/analytics/dbt
+        --profiles-dir /app/analytics/dbt
+
+errors:
+  - id: log_transform_failure
+    type: io.kestra.plugin.core.log.Log
+    level: ERROR
+    message: Article dbt build failed; inspect model and test results before replaying.

@@ -1,0 +1,181 @@
+id: articles_window_ingest
+namespace: kumparan.dev
+
+description: Extract and load one deterministic half-open article interval.
+
+inputs:
+  - id: window_start
+    type: DATETIME
+    description: Inclusive UTC lower bound.
+
+  - id: window_end
+    type: DATETIME
+    description: Exclusive UTC upper bound.
+
+  - id: execution_type
+    type: SELECT
+    values:
+      - BACKFILL
+      - SCHEDULED
+
+tasks:
+  - id: extract_articles
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: kumparan-data-engineering-assessment:runtime
+    timeout: PT30M
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      pullPolicy: NEVER
+      networkMode: kumparan-data-engineering-assessment_default
+      volumes:
+        - "{{ envs.google_application_credentials_host_path }}:/run/secrets/gcp.json:ro"
+    env:
+      SOURCE_READER_DATABASE_URL: "{{ envs.source_reader_database_url }}"
+      GCP_PROJECT_ID: "{{ envs.gcp_project_id }}"
+      GCS_RAW_BUCKET: "{{ envs.gcs_raw_bucket }}"
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp.json
+      WINDOW_START: "{{ inputs.window_start }}"
+      WINDOW_END: "{{ inputs.window_end }}"
+      EXECUTION_TYPE: "{{ inputs.execution_type }}"
+      ATTEMPT_ID: "{{ execution.id }}"
+    commands:
+      - |
+        python - <<'PY'
+        import json
+        import os
+        import subprocess
+        import sys
+
+        command = [
+            sys.executable,
+            "-m",
+            "ingestion.extract_articles",
+            "--window-start",
+            os.environ["WINDOW_START"],
+            "--window-end",
+            os.environ["WINDOW_END"],
+            "--execution-type",
+            os.environ["EXECUTION_TYPE"],
+            "--attempt-id",
+            os.environ["ATTEMPT_ID"],
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True)
+        if completed.stderr:
+            print(completed.stderr, file=sys.stderr, end="")
+        if completed.returncode != 0:
+            raise SystemExit(completed.returncode)
+
+        result = json.loads(completed.stdout)
+        print(f"::{json.dumps({'outputs': result}, separators=(',', ':'))}::")
+        PY
+
+  - id: resolve_manifest
+    type: io.kestra.plugin.scripts.shell.Commands
+    containerImage: kumparan-data-engineering-assessment:runtime
+    timeout: PT10M
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      pullPolicy: NEVER
+      networkMode: kumparan-data-engineering-assessment_default
+      volumes:
+        - "{{ envs.google_application_credentials_host_path }}:/run/secrets/gcp.json:ro"
+    env:
+      GCP_PROJECT_ID: "{{ envs.gcp_project_id }}"
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp.json
+      MANIFEST_URI: "{{ outputs.extract_articles.vars.manifest_uri }}"
+    commands:
+      - |
+        python - <<'PY'
+        import json
+        import os
+        import subprocess
+        import sys
+
+        command = [
+            sys.executable,
+            "-m",
+            "ingestion.manifest",
+            "--manifest-uri",
+            os.environ["MANIFEST_URI"],
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True)
+        if completed.stderr:
+            print(completed.stderr, file=sys.stderr, end="")
+        if completed.returncode != 0:
+            raise SystemExit(completed.returncode)
+
+        result = json.loads(completed.stdout)
+        print(f"::{json.dumps({'outputs': result}, separators=(',', ':'))}::")
+        PY
+
+  - id: assert_manifest_row_count
+    type: io.kestra.plugin.core.execution.Assert
+    conditions:
+      - >-
+        {{ outputs.resolve_manifest.vars.row_count ==
+           outputs.extract_articles.vars.row_count }}
+    errorMessage: Extraction output and committed manifest row counts differ.
+
+  - id: load_if_non_empty
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ outputs.resolve_manifest.vars.row_count > 0 }}"
+    then:
+      - id: load_landing
+        type: io.kestra.plugin.gcp.bigquery.LoadFromGcs
+        timeout: PT30M
+        retry:
+          type: exponential
+          interval: PT5S
+          maxInterval: PT1M
+          maxAttempts: 3
+          maxDuration: PT1H35M
+          warningOnRetry: true
+        projectId: "{{ envs.gcp_project_id }}"
+        location: "{{ envs.bigquery_location }}"
+        from: "{{ outputs.resolve_manifest.vars.part_uris }}"
+        destinationTable: "{{ envs.gcp_project_id }}.{{ envs.bigquery_landing_dataset }}.article_observations"
+        format: PARQUET
+        createDisposition: CREATE_IF_NEEDED
+        writeDisposition: WRITE_APPEND
+        timePartitioningField: _extracted_at
+        timePartitioningType: DAY
+        clusteringFields:
+          - id
+          - author_id
+
+      - id: assert_loaded_row_count
+        type: io.kestra.plugin.core.execution.Assert
+        conditions:
+          - >-
+            {{ outputs.load_landing.rows ==
+               outputs.resolve_manifest.vars.row_count }}
+        errorMessage: BigQuery load row count does not match the committed manifest.
+
+errors:
+  - id: log_window_failure
+    type: io.kestra.plugin.core.log.Log
+    level: ERROR
+    message: |
+      Article ingestion failed for [{{ inputs.window_start }}, {{ inputs.window_end }}).
+      Preserve committed objects and restart from the failed task after inspection.
+
+outputs:
+  - id: manifest_uri
+    type: STRING
+    value: "{{ outputs.extract_articles.vars.manifest_uri }}"
+
+  - id: row_count
+    type: INT
+    value: "{{ outputs.extract_articles.vars.row_count }}"
+
+  - id: batch_id
+    type: STRING
+    value: "{{ outputs.extract_articles.vars.batch_id }}"
+
+  - id: attempt_id
+    type: STRING
+    value: "{{ outputs.extract_articles.vars.attempt_id }}"
+
+  - id: cursor_column
+    type: STRING
+    value: "{{ outputs.extract_articles.vars.cursor_column }}"
