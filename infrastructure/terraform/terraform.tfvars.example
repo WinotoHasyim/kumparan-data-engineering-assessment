@@ -1,5 +1,5 @@
 project_id           = "my-project"
-raw_bucket_name      = "my-existing-bucket"
+raw_bucket_name      = "replace-with-globally-unique-bucket-name"
 location             = "asia-southeast2"
 landing_dataset_id   = "kumparan_landing"
 analytics_dataset_id = "kumparan_analytics"

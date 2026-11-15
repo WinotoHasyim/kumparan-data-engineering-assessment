@@ -1,102 +1,52 @@
 # Kumparan Data Engineering Assessment
 
-An hourly ELT project for synchronizing article data from PostgreSQL to an
-analytical warehouse. The project is designed to cover historical backfills,
-incremental processing, source updates, and deletion handling.
+An hourly ELT pipeline from PostgreSQL to GCS and BigQuery, orchestrated by
+Kestra and transformed with dbt. It supports bounded historical backfills and
+hourly incremental processing.
 
 ## Prerequisites
 
-- Docker Engine or Docker Desktop
-- Docker Compose v2 (`docker compose`)
-- Google Cloud CLI (optional; only for GCP provisioning and ingestion)
-- Terraform 1.6 or newer (optional; only for provisioning GCP resources)
+Docker Engine or Docker Desktop with Docker Compose v2 is required. The complete
+pipeline also requires:
 
-Python, uv, PostgreSQL, and project packages run inside containers and do not
-need to be installed on the host. GNU Make is optional and provides shorter
-aliases for the Docker Compose commands. Local tests do not require Google Cloud
-credentials.
+- A Google Cloud project with billing enabled
+- Google Cloud CLI (`gcloud` and `bq`)
+- Terraform 1.6 or newer
+- Permission to enable APIs and manage GCS, BigQuery, service accounts, and IAM
 
-## Quickstart
+GNU Make is optional.
 
-Start PostgreSQL and wait for its health check:
-
-```bash
-docker compose up -d --wait source-postgres
-```
-
-Inspect the deterministic seed data:
-
-```bash
-docker compose run --build --rm source-tools \
-  python -m demo_source.mutate_articles list --limit 20
-```
-
-Run formatting checks, static analysis, unit tests, and PostgreSQL integration
-tests:
-
-```bash
-docker compose run --build --rm pipeline-test \
-  ruff format --check demo_source ingestion tests
-docker compose run --rm pipeline-test ruff check demo_source ingestion tests
-docker compose run --rm pipeline-test pytest -q
-```
-
-Or, using Make commands:
-
-```bash
-make source-up
-make source-list
-make lint
-make test
-```
-
-## Generate historical volume
-
-The generator creates deterministic articles distributed across the configured
-historical interval:
-
-```bash
-docker compose run --build --rm source-tools \
-  python -m demo_source.generate_articles \
-  --count 100000 \
-  --seed 2026 \
-  --start-id 2000000 \
-  --batch-size 5000
-```
-
-Or, using Make commands:
-
-```bash
-make source-generate COUNT=100000 SEED=2026 BATCH_SIZE=5000
-make source-generate-million
-```
-
-## Provision GCP resources
+## 1. Configure Google Cloud
 
 ```bash
 gcloud auth application-default login
+
 cp infrastructure/terraform/terraform.tfvars.example \
   infrastructure/terraform/terraform.tfvars
-```
-
-Set `project_id` and `raw_bucket_name` in `terraform.tfvars`, then run:
-
-```bash
-terraform -chdir=infrastructure/terraform init
-terraform -chdir=infrastructure/terraform plan -out=deployment.tfplan
-terraform -chdir=infrastructure/terraform apply deployment.tfplan
-```
-
-## Configure ingestion
-
-```bash
 cp .env.example .env
 ```
 
-Set the GCP values in `.env`, then keep the bucket, datasets, and location
-aligned with `terraform.tfvars`.
+Replace the placeholders in both files. The bucket name must be new and
+globally unique. Keep these values aligned:
+
+| `terraform.tfvars` | `.env` |
+| --- | --- |
+| `project_id` | `GCP_PROJECT_ID` |
+| `raw_bucket_name` | `GCS_RAW_BUCKET` |
+| `location` | `BIGQUERY_LOCATION` |
+| `landing_dataset_id` | `BIGQUERY_LANDING_DATASET` |
+| `analytics_dataset_id` | `BIGQUERY_ANALYTICS_DATASET` |
+
+Load the runtime values and configure ADC:
 
 ```bash
+set -a
+. ./.env
+set +a
+
+gcloud config set project "$GCP_PROJECT_ID"
+gcloud auth application-default set-quota-project "$GCP_PROJECT_ID"
+
 export GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH="$(
   gcloud info --format='value(config.paths.global_config_dir)'
 )/application_default_credentials.json"
@@ -104,20 +54,20 @@ export GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH="$(
 test -r "$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH"
 ```
 
-## Run ingestion manually
+## 2. Provision GCP
 
 ```bash
-docker compose run --build --rm \
-  --mount "type=bind,source=$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH,target=/run/secrets/gcp.json,readonly" \
-  --env GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gcp.json \
-  article-ingestion \
-  python -m ingestion.extract_articles \
-  --window-start 2026-11-12T13:00:00Z \
-  --window-end 2026-11-12T14:00:00Z \
-  --execution-type BACKFILL
+terraform -chdir=infrastructure/terraform init
+terraform -chdir=infrastructure/terraform validate
+terraform -chdir=infrastructure/terraform plan -out=deployment.tfplan
+terraform -chdir=infrastructure/terraform apply deployment.tfplan
+terraform -chdir=infrastructure/terraform output
 ```
 
-## Run ingestion with Kestra
+Terraform creates the bucket, BigQuery datasets, required APIs, and a keyless
+pipeline service account. Local containers use your ADC credentials.
+
+## 3. Start the pipeline
 
 ```bash
 docker compose build article-ingestion
@@ -130,19 +80,81 @@ Or, using a Make command:
 make orchestration-up
 ```
 
-Open <http://localhost:8080> and sign in with the local credentials from
-`docker-compose.yml`.
+Open <http://localhost:8080> and sign in:
 
-Use these flows:
+```text
+Username: admin@localhost.dev
+Password: Admin1234!
+```
 
-- `articles_window_ingest` processes one explicit interval through BigQuery.
-- `articles_hourly` runs hourly with a one-hour source grace period.
-- `articles_historical_backfill` splits a bounded range into monthly chunks.
+## 4. Run an end-to-end test
 
-## Continuous source activity
+In Kestra, execute `kumparan.dev.articles_historical_backfill` with:
 
-The `live` profile inserts articles periodically and performs
-deterministic updates, soft deletes, and hard deletes on earlier workload rows:
+```text
+window_start = 2026-11-01T00:00:00Z
+window_end   = 2026-12-01T00:00:00Z
+```
+
+This seeded interval runs the complete path:
+
+```text
+PostgreSQL → GCS → BigQuery landing → dbt models → analytical mart
+```
+
+Wait until the parent execution and its subflows show `SUCCESS`.
+
+## 5. Verify the output
+
+```bash
+gcloud storage ls --recursive "gs://$GCS_RAW_BUCKET/"
+
+bq head --max_rows=10 \
+  "$GCP_PROJECT_ID:$BIGQUERY_LANDING_DATASET.article_observations"
+
+bq head --max_rows=10 \
+  "$GCP_PROJECT_ID:$BIGQUERY_ANALYTICS_DATASET.articles_current"
+
+bq head --max_rows=10 \
+  "$GCP_PROJECT_ID:$BIGQUERY_ANALYTICS_DATASET.active_article_author_daily"
+```
+
+## Available flows
+
+- `articles_window_ingest`: extract and load one explicit interval.
+- `articles_historical_backfill`: process a bounded range in monthly chunks.
+- `articles_hourly`: process hourly `updated_at` windows after a one-hour grace
+  period.
+
+## Optional local validation
+
+Run the automated test suite without using Google Cloud:
+
+```bash
+docker compose run --build --rm pipeline-test
+```
+
+Or, using Make commands:
+
+```bash
+make lint
+make test
+```
+
+## Optional source simulations
+
+Generate 100,000 deterministic historical rows:
+
+```bash
+docker compose run --build --rm source-tools \
+  python -m demo_source.generate_articles \
+  --count 100000 \
+  --seed 2026 \
+  --start-id 2000000 \
+  --batch-size 5000
+```
+
+Run continuous inserts, updates, soft deletes, and hard deletes:
 
 ```bash
 docker compose --profile live up -d --build source-workload
@@ -150,62 +162,15 @@ docker compose --profile live logs -f source-workload
 docker compose --profile live stop source-workload
 ```
 
-Or, using Make commands:
+Run `make help` to list all available commands.
+
+## Stop or reset local services
 
 ```bash
-make source-live-up
-make source-live-logs
-make source-live-down
+docker compose stop kestra kestra-postgres source-postgres
 ```
 
-Change the interval in `.env` with `WORKLOAD_INTERVAL_SECONDS`.
-
-## Controlled mutations
-
-```bash
-# Insert
-docker compose run --rm source-tools \
-  python -m demo_source.mutate_articles insert --id 3000001
-
-# Update
-docker compose run --rm source-tools \
-  python -m demo_source.mutate_articles update 1000002 \
-  --title "Judul setelah diperbarui"
-
-# Soft delete
-docker compose run --rm source-tools \
-  python -m demo_source.mutate_articles soft-delete 1000002
-
-# Simulate a source that changes deleted_at without changing updated_at
-docker compose run --rm source-tools \
-  python -m demo_source.mutate_articles soft-delete 1000008 \
-  --preserve-updated-at
-
-# Restore
-docker compose run --rm source-tools \
-  python -m demo_source.mutate_articles restore 1000002
-
-# Hard delete
-docker compose run --rm source-tools \
-  python -m demo_source.mutate_articles hard-delete 1000008
-
-# Exact interval boundary
-docker compose run --rm source-tools \
-  python -m demo_source.mutate_articles set-boundary-case 1000002 \
-  --at 2026-11-13T01:00:00Z
-```
-
-Every mutation prints JSON containing the affected row and timestamps.
-
-## Stop or reset the source
-
-Stop PostgreSQL without deleting its data:
-
-```bash
-docker compose stop source-postgres
-```
-
-Recreate the database and deterministic seed from scratch:
+Recreate the deterministic source database:
 
 ```bash
 docker compose rm -sf source-postgres
@@ -213,11 +178,4 @@ docker volume rm kumparan-source-postgres-data
 docker compose up -d --wait source-postgres
 ```
 
-Or, using Make commands:
-
-```bash
-make source-down
-make source-reset
-```
-
-Resetting permanently removes the local simulator volume.
+Resetting permanently removes the local source-simulator volume.
