@@ -5,12 +5,12 @@ description: Extract and load one deterministic half-open article interval.
 
 inputs:
   - id: window_start
-    type: DATETIME
-    description: Inclusive UTC lower bound.
+    type: STRING
+    description: Inclusive ISO-8601 lower bound with timezone; use Z for UTC.
 
   - id: window_end
-    type: DATETIME
-    description: Exclusive UTC upper bound.
+    type: STRING
+    description: Exclusive ISO-8601 upper bound with timezone; use Z for UTC.
 
   - id: execution_type
     type: SELECT

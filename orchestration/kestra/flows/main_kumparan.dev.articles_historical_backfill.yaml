@@ -8,12 +8,12 @@ concurrency:
 
 inputs:
   - id: window_start
-    type: DATETIME
-    description: Inclusive historical lower bound.
+    type: STRING
+    description: Inclusive ISO-8601 lower bound with timezone; use Z for UTC.
 
   - id: window_end
-    type: DATETIME
-    description: Exclusive historical upper bound.
+    type: STRING
+    description: Exclusive ISO-8601 upper bound with timezone; use Z for UTC.
 
 tasks:
   - id: plan_chunks
@@ -74,8 +74,9 @@ tasks:
   - id: transform_if_non_empty
     type: io.kestra.plugin.core.flow.If
     condition: >-
-      {{ (outputs.ingest_window |
-          jq('[.[] | .outputs.row_count] | add // 0')) > 0 }}
+      {{ outputs.ingest_window |
+         jq('([.[] | .outputs.row_count] | add // 0) > 0') |
+         first }}
     then:
       - id: transform
         type: io.kestra.plugin.core.flow.Subflow

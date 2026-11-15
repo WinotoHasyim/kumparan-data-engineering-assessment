@@ -10,6 +10,7 @@ FROM python:${PYTHON_VERSION}-slim-bookworm AS base
 COPY --from=uv /uv /uvx /usr/local/bin/
 
 ENV PATH="/opt/venv/bin:${PATH}" \
+    PYTHONPATH="/app" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
