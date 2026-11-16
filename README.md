@@ -239,11 +239,11 @@ Resetting permanently removes the local source-simulator volume.
 
 ## AI use disclosure
 
-AI tools were used extensively for code generation and README documentation. I 
-also used them to explore implementation approaches, troubleshoot issues, and 
-identify potential edge cases. I remained responsible for the final implementation,
-reviewed and adapted AI-generated outputs, and validated the work through testing 
-and end-to-end runs where applicable.
+AI tools were used extensively for code generation and README documentation. I
+also used them to explore implementation approaches, troubleshoot issues, and
+identify potential edge cases. I remained responsible for the final
+implementation, reviewed and adapted AI-generated outputs, and validated the
+work through tests and end-to-end runs where applicable.
 
 ## Bonus 1: Existing data from 2016
 
@@ -255,10 +255,10 @@ article ID and keeps the newest observed state. The hourly flow then reads by
 `updated_at` after a one-hour grace period.
 
 For an initial load from 2016, set the backfill start to
-`2016-01-01T00:00:00Z` and its end to the chosen cutover time. Verify every
-chunk. The hourly schedule continues independently during the backfill, so a
-separate catch-up is not normally needed. If an hourly interval was disabled or
-failed and remains unprocessed, run that missing interval with
+`2016-01-01T00:00:00Z` and its end to the chosen cutover time. The hourly
+schedule continues independently during the backfill, so a separate catch-up is
+not normally needed. If an hourly interval was disabled or failed and remains
+unprocessed, run that missing interval with
 `articles_window_ingest` and `execution_type=SCHEDULED`. Since the source holds
 current rows rather than a change history, the backfill cannot recreate prior
 versions or rows already removed from the source.
@@ -284,21 +284,21 @@ Without CDC, the option I considered first is a dbt snapshot with
 record disappears from the snapshot's input. I decided against it for two
 reasons:
 
-- **Comparison-based detection is not reliable enough for hard deletes.**  A dbt
-  snapshot only detects deletions when it runs, so it cannot detect articles 
-  created and deleted between runs. It also needs a complete list of existing 
-  source IDs on every run, which the hourly incremental extraction cannot provide 
-  because unchanged articles are omitted.
+- **Comparison-based detection is not reliable enough for hard deletes.** A dbt
+  snapshot only detects deletions when it runs, so it cannot detect articles
+  created and deleted between runs. It also needs a complete list of existing
+  source IDs on every run, which the hourly incremental extraction cannot
+  provide because unchanged articles are omitted.
 - **It needs a complete copy of the source on every run.** It only detects rows
   that vanish from its input, and `articles_current` keeps deleted articles, so
   the snapshot would need a full copy of the source's current rows. That would
   be a third copy of the data after GCS and the BigQuery landing table, and
   articles carry large `content` text.
 
-But as a fallback, I would periodically extract only article IDs and created_at from PostgreSQL and 
-compare them with articles_current, rather than repeatedly extracting full article 
-records with large content fields. Articles present in BigQuery but missing from 
-the source extract would be treated as possible hard deletes, excluding articles 
-created after the extraction started. This reduces data transfer, but deletion is 
-still inferred through periodic comparisons, which is why CDC remains the preferred 
-production approach.
+As a fallback, I would periodically extract only `id` and `created_at` from
+PostgreSQL and compare them with `articles_current`, rather than repeatedly
+extracting complete article rows with large `content` values. Rows present in
+`articles_current` but missing from the source snapshot would be treated as
+possible hard deletes, excluding rows created after the snapshot began. This
+reduces data transfer, but deletion is still inferred through periodic
+comparison, so CDC remains the preferred production approach.

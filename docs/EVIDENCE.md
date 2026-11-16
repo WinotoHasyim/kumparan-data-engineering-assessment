@@ -14,7 +14,7 @@ The screenshots below document a successful end-to-end run followed by a one-mil
 
 ![Historical backfill Gantt view](../assets/img/e2e/02-kestra-timeline.png)
 
-*The timeline shows ingestion completing before the dbt transformation.*
+*The completed timeline shows chunk planning and ingestion followed by a successful dbt transformation.*
 
 ### 3. Workflow topology
 
