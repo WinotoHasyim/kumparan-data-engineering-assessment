@@ -4,6 +4,19 @@ An hourly ELT pipeline from PostgreSQL to GCS and BigQuery, orchestrated by
 Kestra and transformed with dbt. It supports bounded historical backfills and
 hourly incremental processing.
 
+## Design
+
+```mermaid
+flowchart LR
+    P[(PostgreSQL)] --> E[Python extractor]
+    E --> G[(GCS Parquet)]
+    G --> B[(BigQuery landing)]
+    B --> D[dbt]
+    D --> A[(BigQuery analytics)]
+```
+
+Kestra orchestrates the hourly and historical backfill flows.
+
 ## Prerequisites
 
 Docker Engine or Docker Desktop with Docker Compose v2 is required. The complete
@@ -130,6 +143,46 @@ See [execution evidence](docs/EVIDENCE.md) for the end-to-end run and one-millio
 - `articles_hourly`: process hourly `updated_at` windows after a one-hour grace
   period.
 
+## Run the flows in Kestra
+
+### Hourly schedule
+
+Kestra watches the mounted flow files. Once it has loaded `articles_hourly`,
+the hourly schedule is enabled automatically. It runs at minute 00 of each hour
+in UTC. The one-hour grace period means a run scheduled for 03:00 UTC extracts
+source rows with `updated_at` in `[01:00, 02:00)`; the end of the interval is
+excluded. When that interval contains rows, the execution extracts them from
+PostgreSQL, loads them into BigQuery, and runs dbt through to the analytics
+mart. Empty intervals skip the dbt step.
+
+If Kestra first starts at 03:15 UTC, its next regular run is at 04:00 UTC. If
+Kestra restarts after being unavailable, this flow is configured to recover
+missed scheduled times. To inspect hourly runs, open **Executions** in the left
+sidebar and filter for `articles_hourly`.
+
+### Historical backfill
+
+To start or rerun a backfill, open **Flows** in the left sidebar, select
+`articles_historical_backfill`, click **Execute** in the upper-right corner,
+and enter `window_start` and `window_end`. Use UTC timestamps in this format:
+
+```text
+window_start = 2016-01-01T00:00:00Z
+window_end   = 2026-12-01T00:00:00Z
+```
+
+`window_start` is inclusive and `window_end` is exclusive, so these example
+bounds select rows where `created_at` is on or after the start and before the
+end. Backfill chunks use `created_at`, unlike the hourly flow, which uses
+`updated_at`. An article created in 2016 and updated in 2024 is still included
+in a `[2016-01-01, 2020-01-01)` backfill; the extracted row contains its current
+source values.
+
+Rerunning the same bounds creates another attempt-specific set of Parquet
+objects in GCS, and both attempts remain stored. BigQuery landing also keeps the
+observations; dbt deduplicates them in `articles_current` by article ID and
+keeps the newest observed state.
+
 ## Optional local validation
 
 Run the automated test suite without using Google Cloud:
@@ -183,3 +236,69 @@ docker compose up -d --wait source-postgres
 ```
 
 Resetting permanently removes the local source-simulator volume.
+
+## AI use disclosure
+
+AI tools were used extensively for code generation and README documentation. I 
+also used them to explore implementation approaches, troubleshoot issues, and 
+identify potential edge cases. I remained responsible for the final implementation,
+reviewed and adapted AI-generated outputs, and validated the work through testing 
+and end-to-end runs where applicable.
+
+## Bonus 1: Existing data from 2016
+
+An hourly job alone will not load data that predates the pipeline. This project
+provides a manual initial backfill: `articles_historical_backfill` takes UTC
+start and end times, splits the range into calendar-month chunks, and extracts
+each chunk by `created_at`. The rows land in BigQuery, where dbt merges by
+article ID and keeps the newest observed state. The hourly flow then reads by
+`updated_at` after a one-hour grace period.
+
+For an initial load from 2016, set the backfill start to
+`2016-01-01T00:00:00Z` and its end to the chosen cutover time. Verify every
+chunk. The hourly schedule continues independently during the backfill, so a
+separate catch-up is not normally needed. If an hourly interval was disabled or
+failed and remains unprocessed, run that missing interval with
+`articles_window_ingest` and `execution_type=SCHEDULED`. Since the source holds
+current rows rather than a change history, the backfill cannot recreate prior
+versions or rows already removed from the source.
+
+## Bonus 2: Hard deletes
+
+This project does not currently synchronize hard deletes. A hard delete removes
+the source row together with its `updated_at` value, so timestamp polling has
+nothing left to find and the warehouse row stays active.
+
+For production, I would use change data capture (CDC) on PostgreSQL's
+write-ahead log (WAL), with a tool such as [Debezium](https://debezium.io/documentation/reference/stable/connectors/postgresql.html)
+or [Google Datastream](https://cloud.google.com/datastream/docs/sources-postgresql).
+CDC reports each delete as an explicit event with the article ID and its
+position in the log, in commit order and without scanning the source table. I
+would land these events like the other extractions, apply them idempotently, and
+mark the article as hard-deleted in `articles_current`. I have not implemented
+CDC in this assessment because I have not worked with it yet and did not want
+to ship something I could not validate.
+
+Without CDC, the option I considered first is a dbt snapshot with
+`hard_deletes: new_record`, which adds a row with `dbt_is_deleted = true` when a
+record disappears from the snapshot's input. I decided against it for two
+reasons:
+
+- **Comparison-based detection is not reliable enough for hard deletes.**  A dbt
+  snapshot only detects deletions when it runs, so it cannot detect articles 
+  created and deleted between runs. It also needs a complete list of existing 
+  source IDs on every run, which the hourly incremental extraction cannot provide 
+  because unchanged articles are omitted.
+- **It needs a complete copy of the source on every run.** It only detects rows
+  that vanish from its input, and `articles_current` keeps deleted articles, so
+  the snapshot would need a full copy of the source's current rows. That would
+  be a third copy of the data after GCS and the BigQuery landing table, and
+  articles carry large `content` text.
+
+But as a fallback, I would periodically extract only article IDs and created_at from PostgreSQL and 
+compare them with articles_current, rather than repeatedly extracting full article 
+records with large content fields. Articles present in BigQuery but missing from 
+the source extract would be treated as possible hard deletes, excluding articles 
+created after the extraction started. This reduces data transfer, but deletion is 
+still inferred through periodic comparisons, which is why CDC remains the preferred 
+production approach.
